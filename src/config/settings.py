@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class LLMSettings(BaseModel):
     """Configuration for the primary LLM provider."""
     provider: str = Field(default="gemini")
-    model: str = Field(default="gemini-1.5-flash")
+    model: str = Field(default="gemini-2.5-flash")
     temperature: float = Field(default=0.2)
     max_tokens: int = Field(default=1024)
 

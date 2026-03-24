@@ -59,7 +59,7 @@ def _rewrite_sql_with_llm(sql: str, error_msg: str) -> str:
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.prompts import ChatPromptTemplate
 
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0)
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "Fix the following BigQuery SQL based on the error message.\n"

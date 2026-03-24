@@ -19,6 +19,7 @@ _settings = load_settings()
 _llm = ChatGoogleGenerativeAI(
     model=_settings.llm.model,
     temperature=_settings.llm.temperature,
+    thinking_budget=512,          # optional: cap thinking tokens to control cost
 )
 _prefs = UserPrefsStore(_settings.memory.user_prefs_path)
 
