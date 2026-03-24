@@ -1,0 +1,6 @@
+tone: professional
+style_hints:
+  - always_compare_branches_by_revenue_and_margin
+  - use_markdown_tables_for_top_5_or_10_lists
+  - bullet_points_for_qualitative_analysis
+  - lead_with_key_metric_then_supporting_data

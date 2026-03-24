@@ -1,0 +1,14 @@
+llm:
+  provider: "gemini"
+  model: "gemini-1.5-flash"
+  temperature: 0.2
+  max_tokens: 1024
+
+bigquery:
+  project_id: null
+  dataset_id: "bigquery-public-data.thelook_ecommerce"
+
+memory:
+  golden_bucket_path: "data/golden_trios.sqlite"
+  user_prefs_path: "data/user_prefs.sqlite"
+  reports_path: "data/saved_reports.sqlite"

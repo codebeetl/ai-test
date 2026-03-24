@@ -1,112 +1,84 @@
-"""BigQueryRunner — lean read-only BigQuery client for thelook_ecommerce.
-
-This is an adaptation of the Opsfleet starter client, extended with:
-  - Column-level PII masking applied at the DataFrame layer (before return)
-  - Structured logging at INFO/ERROR level for observability
-  - The resilient() retry decorator for transient GCP failures
-
-All queries are READ-ONLY. This client has no mutation capability by design;
-the dataset is a public BigQuery dataset and our GCP credentials are
-configured with read-only IAM roles.
-"""
-
-from __future__ import annotations
+"""A lean BigQuery client for executing SQL queries and returning DataFrame results."""
 
 import logging
-from typing import Any, Optional
-
+from typing import Optional, List, Dict, Any
 import pandas as pd
 from google.cloud import bigquery
-from google.cloud.exceptions import GoogleCloudError
-
-from src.resilience.retry import resilient
-from src.safety.pii_masker import mask_dataframe_pii
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATASET = "bigquery-public-data.thelook_ecommerce"
-
 
 class BigQueryRunner:
-    """Read-only BigQuery client scoped to the thelook_ecommerce dataset.
+    """Thin wrapper around the BigQuery Python client.
 
-    Wraps google-cloud-bigquery with retry logic, structured logging, and
-    automatic PII column stripping on all returned DataFrames.
+    Provides execute_query and get_table_schema, keeping all BigQuery
+    interaction in one place so it is easy to mock in tests.
     """
 
     def __init__(
         self,
         project_id: Optional[str] = None,
-        dataset_id: str = DEFAULT_DATASET,
+        dataset_id: Optional[str] = "bigquery-public-data.thelook_ecommerce",
     ) -> None:
         """Initialise the BigQuery client.
 
         Args:
-            project_id: GCP project ID. If None, uses Application Default Credentials.
-            dataset_id: Fully-qualified BigQuery dataset path.
+            project_id: GCP project ID. Uses application-default credentials if None.
+            dataset_id: Default dataset for schema lookups.
         """
-        logger.info("Initialising BigQuery client", extra={"dataset": dataset_id})
+        logger.info("Initialising BigQuery client")
         try:
             self.client = bigquery.Client(project=project_id)
             self.dataset_id = dataset_id
-            logger.info("BigQuery client ready", extra={"dataset": self.dataset_id})
-        except Exception as exc:
-            logger.error("Failed to initialise BigQuery client", extra={"error": str(exc)})
+            logger.info(f"BigQuery client ready for dataset: {self.dataset_id}")
+        except Exception as e:
+            logger.error(f"Failed to initialise BigQuery client: {e}")
             raise
 
-    @resilient(exception_types=(GoogleCloudError, TimeoutError))
     def execute_query(self, sql_query: str) -> pd.DataFrame:
-        """Execute a SQL query and return a PII-masked DataFrame.
-
-        PII columns (email, phone, etc.) are stripped at this layer as a
-        defence-in-depth measure. The safety.pii_masker layer applies a
-        second pass on the serialised string output before CLI display.
+        """Execute a SQL query and return results as a DataFrame.
 
         Args:
-            sql_query: A valid BigQuery Standard SQL string.
+            sql_query: The SQL query to execute.
 
         Returns:
-            pandas DataFrame with PII columns removed.
+            DataFrame containing the query results.
 
         Raises:
-            GoogleCloudError: On unrecoverable BigQuery errors (after retries).
+            Exception: If query execution fails.
         """
-        logger.info("Executing BigQuery query", extra={"sql_preview": sql_query[:120]})
         try:
-            job = self.client.query(sql_query)
-            df = job.result().to_dataframe()
-            logger.info("Query completed", extra={"row_count": len(df)})
-            return mask_dataframe_pii(df)
-        except GoogleCloudError as exc:
-            logger.error("BigQuery execution failed", extra={"error": str(exc)})
+            logger.info("Executing BigQuery query")
+            query_job = self.client.query(sql_query)
+            df = query_job.result().to_dataframe()
+            logger.info(f"Query completed, returned {len(df)} rows")
+            return df
+        except Exception as e:
+            logger.error(f"BigQuery execution failed: {e}")
             raise
 
-    def get_table_schema(self, table_name: str) -> list[dict[str, Any]]:
-        """Retrieve schema metadata for a thelook_ecommerce table.
+    def get_table_schema(self, table_name: str) -> List[Dict[str, Any]]:
+        """Get schema information for a specific table.
 
         Args:
-            table_name: One of: orders, order_items, products, users.
+            table_name: One of orders, order_items, products, users.
 
         Returns:
-            List of dicts with keys: name, type, mode, description.
-
-        Raises:
-            GoogleCloudError: If the table reference is invalid or access denied.
+            List of dicts with column name, type, mode, description.
         """
-        table_ref = f"{self.dataset_id}.{table_name}"
         try:
+            table_ref = f"{self.dataset_id}.{table_name}"
             table = self.client.get_table(table_ref)
-            schema = [
-                {
-                    "name": f.name,
-                    "type": f.field_type,
-                    "mode": f.mode,
-                    "description": f.description or "",
-                }
-                for f in table.schema
-            ]
-            logger.info("Schema retrieved", extra={"table": table_name})
-            return schema
-        except Exception as exc:
-            logger.error("Schema retrieval failed", extra={"table": table_name, "error": str(exc)})
+            schema_info = []
+            for field in table.schema:
+                schema_info.append({
+                    "name": field.name,
+                    "type": field.field_type,
+                    "mode": field.mode,
+                    "description": field.description or "",
+                })
+            logger.info(f"Retrieved schema for table {table_name}")
+            return schema_info
+        except Exception as e:
+            logger.error(f"Failed to get schema for {table_name}: {e}")
             raise

@@ -1,147 +1,89 @@
-"""Golden Bucket — vector store of expert Question→SQL→Report trios.
+"""Golden Bucket storage — Trio retrieval and incremental updates.
 
-The Golden Bucket stores historical 'Trios' created by human analysts:
-  { question: str, sql: str, report: str }
-
-The agent uses similarity search against this store to retrieve analogous
-past analyses, helping it interpret ambiguous questions and generate
-higher-quality SQL aligned with how analysts previously solved similar problems.
-
-Prototype vs Production:
-  PROTOTYPE  : ChromaDB running locally with a persistent directory at
-               data/golden_bucket/. Uses sentence-transformers for embeddings.
-  PRODUCTION : Replace ChromaDB with Vertex AI Matching Engine (Vector Search).
-               The GoldenBucketStore abstract base class is the extension point.
-               Production embeddings would use text-embedding-004 via Vertex AI.
-               See: https://cloud.google.com/vertex-ai/docs/vector-search/overview
-
-               # PRODUCTION SWAP:
-               # from src.memory.vertex_golden_bucket import VertexGoldenBucketStore
-               # store = VertexGoldenBucketStore(index_endpoint=..., deployed_index_id=...)
-
-Learning Loop:
-  New trios are added via add_trio() after successful human-verified sessions.
-  The store is persistent (ChromaDB writes to disk), so learning accumulates
-  across agent restarts without any additional infrastructure.
+Small-scale: FAISS index + SQLite. Rebuilds the FAISS index from the
+database on each add_trios call. Suitable for prototype scale (<10k trios).
 """
 
-from __future__ import annotations
-
-import logging
-from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Iterable, List
+import sqlite3
+import logging
+
+import faiss
+import numpy as np
+from langchain_core.embeddings import Embeddings
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CHROMA_PATH = Path("data/golden_bucket")
-DEFAULT_COLLECTION = "golden_trios"
-DEFAULT_TOP_K = 3
+
+@dataclass
+class Trio:
+    """A Golden Bucket record capturing a past expert analysis."""
+    question: str
+    sql: str
+    report: str
 
 
-class GoldenBucketStore(ABC):
-    """Abstract golden bucket store. Swap concrete implementation for production."""
+class GoldenBucket:
+    """Vector-searchable Golden Bucket over Trio records."""
 
-    @abstractmethod
-    def search(self, question: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]: ...
+    DEFAULT_DIM = 768  # Gemini embedding-001 dimension
 
-    @abstractmethod
-    def add_trio(self, question: str, sql: str, report: str) -> None: ...
+    def __init__(self, path: str, embedder: Embeddings | None) -> None:
+        self._db_path = Path(path)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self._db_path))
+        self._embedder = embedder
+        self._ensure_schema()
 
+    def _ensure_schema(self) -> None:
+        cur = self._conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trios (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              question TEXT NOT NULL,
+              sql TEXT NOT NULL,
+              report TEXT NOT NULL
+            )
+        """)
+        self._conn.commit()
 
-class ChromaGoldenBucketStore(GoldenBucketStore):
-    """ChromaDB-backed golden bucket for prototype use.
+    def add_trios(self, trios: Iterable[Trio]) -> None:
+        """Insert new Trio records into the database."""
+        cur = self._conn.cursor()
+        for trio in trios:
+            cur.execute(
+                "INSERT INTO trios (question, sql, report) VALUES (?, ?, ?)",
+                (trio.question, trio.sql, trio.report),
+            )
+        self._conn.commit()
+        logger.info("Trios added to Golden Bucket")
 
-    # PRODUCTION NOTE: Vertex AI Matching Engine replaces this.
-    # ChromaDB is appropriate for local dev and demos but does not scale
-    # to millions of trios or support fine-grained IAM access control.
-    # Swap to VertexGoldenBucketStore (to be implemented) in settings.py
-    # when moving to production.
-    """
-
-    def __init__(
-        self,
-        persist_dir: Path = DEFAULT_CHROMA_PATH,
-        collection_name: str = DEFAULT_COLLECTION,
-    ) -> None:
-        """Initialise the ChromaDB client and collection.
-
-        Args:
-            persist_dir: Directory for ChromaDB persistence (survives restarts).
-            collection_name: Name of the Chroma collection for golden trios.
-        """
-        try:
-            import chromadb
-            from chromadb.utils import embedding_functions
-        except ImportError as exc:
-            raise ImportError(
-                "chromadb is required: pip install chromadb sentence-transformers"
-            ) from exc
-
-        persist_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(persist_dir))
-
-        # sentence-transformers/all-MiniLM-L6-v2 — lightweight, no API key needed.
-        # PRODUCTION: Replace with VertexAIEmbeddingFunction using text-embedding-004.
-        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name, embedding_function=ef
-        )
-        logger.info(
-            "ChromaGoldenBucketStore ready",
-            extra={"persist_dir": str(persist_dir), "doc_count": self._collection.count()},
-        )
-
-    def search(self, question: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
-        """Find the most semantically similar past trios for a given question.
-
-        Args:
-            question: The user's natural language question.
-            top_k: Number of trios to retrieve.
-
-        Returns:
-            List of dicts with keys: question, sql, report, distance.
-            Returns empty list if the collection is empty.
-        """
-        if self._collection.count() == 0:
-            logger.info("Golden bucket is empty — no analogues found")
+    def similarity_search(self, query: str, k: int = 3) -> List[Trio]:
+        """Find the k most similar trios to a user question using FAISS."""
+        if self._embedder is None:
+            logger.warning("No embedder configured, skipping similarity search")
             return []
 
-        results = self._collection.query(
-            query_texts=[question],
-            n_results=min(top_k, self._collection.count()),
-            include=["metadatas", "distances"],
-        )
-        trios = []
-        for meta, dist in zip(
-            results["metadatas"][0], results["distances"][0]
-        ):
-            trios.append({**meta, "distance": dist})
-        logger.info("Golden bucket search complete", extra={"results": len(trios)})
-        return trios
+        cur = self._conn.cursor()
+        cur.execute("SELECT id, question, sql, report FROM trios")
+        rows = cur.fetchall()
+        if not rows:
+            return []
 
-    def add_trio(
-        self, question: str, sql: str, report: str, trio_id: str | None = None
-    ) -> None:
-        """Persist a new expert trio to the golden bucket.
+        questions = [q for _, q, _, _ in rows]
+        vectors = self._embedder.embed_documents(questions)
+        query_vec = self._embedder.embed_query(query)
+        dim = len(query_vec)
 
-        Called by the learning loop after a session is marked as high-quality
-        by a human reviewer or automated quality gate.
+        index = faiss.IndexFlatL2(dim)
+        index.add(np.array(vectors, dtype="float32"))
+        _, indices = index.search(np.array([query_vec], dtype="float32"), min(k, len(rows)))
 
-        Args:
-            question: The original natural language question.
-            sql: The validated SQL that correctly answers the question.
-            report: The analyst-quality report generated from the SQL results.
-            trio_id: Optional stable ID; auto-generated if not provided.
-        """
-        import uuid
-
-        doc_id = trio_id or str(uuid.uuid4())
-        self._collection.add(
-            ids=[doc_id],
-            documents=[question],
-            metadatas=[{"question": question, "sql": sql, "report": report}],
-        )
-        logger.info("Trio added to golden bucket", extra={"id": doc_id})
+        result: List[Trio] = []
+        for idx in indices[0]:
+            if 0 <= idx < len(rows):
+                _, q, sql, report = rows[idx]
+                result.append(Trio(question=q, sql=sql, report=report))
+        return result
