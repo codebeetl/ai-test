@@ -2,8 +2,10 @@
 
 Strategy: two-pass.
   Pass 1 — Regex: Fast, deterministic removal of email and phone patterns.
-  Pass 2 — Column-level: Drops known PII columns from DataFrames before
-            serialisation. Cheap and deterministic — no LLM cost.
+  Pass 2 — Column-level: Drops PII columns from DataFrames before serialisation.
+
+PII column names are configured in config.yaml under safety.pii_columns so
+the list can be extended without touching code.
 """
 
 import re
@@ -15,7 +17,12 @@ logger = logging.getLogger(__name__)
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 _PHONE_RE = re.compile(r"(\+?\d[\d\s\-().]{7,}\d)")
 
-PII_COLUMNS = {"email", "phone", "phone_number", "mobile", "address"}
+
+def _get_pii_columns() -> set[str]:
+    """Read PII column names from config.yaml — called fresh each time so
+    changes to config.yaml take effect without restarting the process."""
+    from src.config.settings import load_settings
+    return {c.lower() for c in load_settings().safety.pii_columns}
 
 
 def mask_pii(text: str) -> str:
@@ -35,7 +42,10 @@ def mask_pii(text: str) -> str:
 
 
 def mask_dataframe_pii(df: Any) -> Any:
-    """Drop known PII columns from a pandas DataFrame before serialisation.
+    """Drop PII columns from a pandas DataFrame before serialisation.
+
+    The column list is read from config.yaml (safety.pii_columns) on each
+    call so it can be extended without restarting the process.
 
     Args:
         df: pandas DataFrame from a BigQuery result.
@@ -43,8 +53,12 @@ def mask_dataframe_pii(df: Any) -> Any:
     Returns:
         DataFrame with PII columns removed.
     """
-    cols_to_drop = [c for c in df.columns if c.lower() in PII_COLUMNS]
+    pii_columns = _get_pii_columns()
+    cols_to_drop = [c for c in df.columns if c.lower() in pii_columns]
     if cols_to_drop:
-        logger.warning("Dropping PII columns from DataFrame", extra={"cols": cols_to_drop})
+        logger.warning(
+            "Dropping PII columns from DataFrame",
+            extra={"cols": cols_to_drop},
+        )
         df = df.drop(columns=cols_to_drop)
     return df

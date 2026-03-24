@@ -1,0 +1,7 @@
+tone: "professional and concise"
+style_hints:
+  - "Lead with the key metric, then supporting data"
+  - "Use markdown tables for top-5 or top-10 lists"
+  - "Use bullet points for qualitative analysis"
+  - "Always compare branches or products by revenue and margin"
+  - "End with a one-sentence executive summary"

@@ -1,20 +1,19 @@
 """High-stakes oversight: CLI confirmation gate for all destructive operations.
 
-The confirmation phrase is configured in config.yaml under safety.confirm_phrase
-so it can be changed without touching code.
+Any tool marked as destructive MUST call require_confirmation() before
+mutating state. The operator must type the exact phrase 'YES DELETE'
+to proceed. Any other input aborts cleanly.
 """
 
 import logging
-from src.config.settings import load_settings
 
 logger = logging.getLogger(__name__)
+
+CONFIRM_PHRASE = "YES DELETE"
 
 
 def require_confirmation(action_description: str) -> bool:
     """Block execution until the operator explicitly confirms a destructive action.
-
-    The required phrase is read fresh from config.yaml on each call so it
-    can be updated without restarting the process.
 
     Args:
         action_description: Human-readable summary of what will be changed/deleted.
@@ -22,17 +21,15 @@ def require_confirmation(action_description: str) -> bool:
     Returns:
         True if the user confirmed, False if aborted.
     """
-    confirm_phrase = load_settings().safety.confirm_phrase
-
     print("\n" + "!" * 60)
     print("  ⚠  HIGH-STAKES OPERATION — CONFIRMATION REQUIRED")
     print("!" * 60)
     print(f"\nAction: {action_description}")
-    print(f'\nType exactly "{confirm_phrase}" to proceed, or anything else to abort:\n')
+    print(f'\nType exactly "{CONFIRM_PHRASE}" to proceed, or anything else to abort:\n')
 
     user_input = input("> ").strip()
 
-    if user_input == confirm_phrase:
+    if user_input == CONFIRM_PHRASE:
         logger.warning("Destructive operation confirmed", extra={"action": action_description})
         return True
 

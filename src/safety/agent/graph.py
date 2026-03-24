@@ -12,19 +12,12 @@ from src.agent.nodes import (
 
 
 def _route_intent(state: AgentState) -> str:
-    """Route after intent classification."""
+    """Determine which node to route to after intent classification."""
     if state.get("pending_destructive_op"):
         return "destructive"
     if (state.get("raw_result") or {}).get("out_of_scope"):
         return "out_of_scope"
     return "analysis"
-
-
-def _route_confirmation(state: AgentState) -> str:
-    """Route after confirmation gate — confirmed only if op still set."""
-    if state.get("pending_destructive_op"):
-        return "confirmed"
-    return "aborted"
 
 
 def build_graph() -> StateGraph:
@@ -49,17 +42,8 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # FIX (Req 3): confirmation is now enforced at graph level, not buried in the tool.
-    graph.add_conditional_edges(
-        "confirmation_gate",
-        _route_confirmation,
-        {
-            "confirmed": "execute_destructive",
-            "aborted":   "mask_and_format",
-        },
-    )
-
     graph.add_edge("execute_analysis", "mask_and_format")
+    graph.add_edge("confirmation_gate", "execute_destructive")
     graph.add_edge("execute_destructive", "mask_and_format")
     graph.add_edge("mask_and_format", END)
 

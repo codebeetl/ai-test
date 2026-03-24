@@ -3,6 +3,10 @@ llm:
   model: "gemini-2.5-flash"
   temperature: 0.2
   max_tokens: 8192
+  # Model used for SQL self-correction retries (can be a cheaper/faster model)
+  correction_model: "gemini-2.5-flash"
+  # Embedding model for Golden Bucket similarity search
+  embedding_model: "models/embedding-001"
 
 bigquery:
   project_id: null
@@ -13,3 +17,28 @@ memory:
   user_prefs_path: "data/user_prefs.sqlite"
   reports_path: "data/saved_reports.sqlite"
   candidate_trios_path: "data/candidate_trios.jsonl"
+
+safety:
+  # Exact phrase the operator must type to confirm destructive operations
+  confirm_phrase: "YES DELETE"
+  # Default user ID when none is specified
+  default_user_id: "manager_a"
+  # PII column names that are always dropped from query results
+  pii_columns:
+    - email
+    - phone
+    - phone_number
+    - mobile
+    - address
+
+resilience:
+  # Max LLM invocation attempts (includes initial attempt)
+  llm_max_attempts: 5
+  llm_min_wait_s: 5
+  llm_max_wait_s: 60
+  # Max BigQuery execution attempts before surfacing an error
+  bq_max_attempts: 3
+  bq_min_wait_s: 2
+  bq_max_wait_s: 15
+  # Max SQL self-correction rewrites per query
+  sql_max_retries: 2

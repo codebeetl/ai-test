@@ -11,6 +11,7 @@ from src.agent.graph import build_graph
 from src.agent.state import AgentState
 from src.memory.user_prefs import UserPrefsStore
 from src.config.settings import load_settings
+from src.observability.metrics import write_snapshot
 
 
 def _get_startup_hints() -> list[str]:
@@ -86,7 +87,7 @@ def run_cli() -> None:
 
     state: AgentState = {
         "messages": [],
-        "user_id": "manager_a",
+        "user_id": load_settings().safety.default_user_id,
         "pending_destructive_op": None,
         "last_sql": None,
         "retry_count": 0,
@@ -104,6 +105,7 @@ def run_cli() -> None:
                 continue
 
             if user_input.lower() in {"/quit", "/exit"}:
+                write_snapshot("data/metrics_snapshot.json")
                 print("\nGoodbye!")
                 break
 
@@ -133,6 +135,7 @@ def run_cli() -> None:
         except KeyboardInterrupt:
             print("\n\nInterrupted. Type /quit to exit.")
         except EOFError:
+            write_snapshot("data/metrics_snapshot.json")
             print("\n\nGoodbye!")
             break
 
