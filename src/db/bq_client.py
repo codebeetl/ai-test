@@ -5,27 +5,19 @@ from typing import Optional, List, Dict, Any
 import pandas as pd
 from google.cloud import bigquery
 
+from src.resilience.retry import with_backoff
+
 logger = logging.getLogger(__name__)
 
 
 class BigQueryRunner:
-    """Thin wrapper around the BigQuery Python client.
-
-    Provides execute_query and get_table_schema, keeping all BigQuery
-    interaction in one place so it is easy to mock in tests.
-    """
+    """Thin wrapper around the BigQuery Python client."""
 
     def __init__(
         self,
         project_id: Optional[str] = None,
         dataset_id: Optional[str] = "bigquery-public-data.thelook_ecommerce",
     ) -> None:
-        """Initialise the BigQuery client.
-
-        Args:
-            project_id: GCP project ID. Uses application-default credentials if None.
-            dataset_id: Default dataset for schema lookups.
-        """
         logger.info("Initialising BigQuery client")
         try:
             self.client = bigquery.Client(project=project_id)
@@ -35,18 +27,9 @@ class BigQueryRunner:
             logger.error(f"Failed to initialise BigQuery client: {e}")
             raise
 
+    @with_backoff(max_attempts=4, min_wait=2, max_wait=30)
     def execute_query(self, sql_query: str) -> pd.DataFrame:
-        """Execute a SQL query and return results as a DataFrame.
-
-        Args:
-            sql_query: The SQL query to execute.
-
-        Returns:
-            DataFrame containing the query results.
-
-        Raises:
-            Exception: If query execution fails.
-        """
+        """Execute a SQL query with exponential back-off on transient errors."""
         try:
             logger.info("Executing BigQuery query")
             query_job = self.client.query(sql_query)
@@ -58,27 +41,19 @@ class BigQueryRunner:
             raise
 
     def get_table_schema(self, table_name: str) -> List[Dict[str, Any]]:
-        """Get schema information for a specific table.
-
-        Args:
-            table_name: One of orders, order_items, products, users.
-
-        Returns:
-            List of dicts with column name, type, mode, description.
-        """
+        """Get schema information for a specific table."""
         try:
             table_ref = f"{self.dataset_id}.{table_name}"
             table = self.client.get_table(table_ref)
-            schema_info = []
-            for field in table.schema:
-                schema_info.append({
+            return [
+                {
                     "name": field.name,
                     "type": field.field_type,
                     "mode": field.mode,
                     "description": field.description or "",
-                })
-            logger.info(f"Retrieved schema for table {table_name}")
-            return schema_info
+                }
+                for field in table.schema
+            ]
         except Exception as e:
             logger.error(f"Failed to get schema for {table_name}: {e}")
             raise

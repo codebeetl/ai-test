@@ -1,11 +1,4 @@
-"""LangGraph state machine — wires all nodes and edges together.
-
-Graph flow:
-  START → classify_intent → [analysis | destructive]
-        → execute_analysis / confirmation_gate → execute_destructive
-        → mask_and_format
-        → END
-"""
+"""LangGraph state machine — wires all nodes and edges together."""
 
 from langgraph.graph import StateGraph, END
 from src.agent.state import AgentState
@@ -18,12 +11,17 @@ from src.agent.nodes import (
 )
 
 
-def build_graph() -> StateGraph:
-    """Construct and compile the retail data agent LangGraph.
+def _route_intent(state: AgentState) -> str:
+    """Determine which node to route to after intent classification."""
+    if state.get("pending_destructive_op"):
+        return "destructive"
+    if (state.get("raw_result") or {}).get("out_of_scope"):
+        return "out_of_scope"
+    return "analysis"
 
-    Returns:
-        Compiled LangGraph ready for invocation.
-    """
+
+def build_graph() -> StateGraph:
+    """Construct and compile the retail data agent LangGraph."""
     graph = StateGraph(AgentState)
 
     graph.add_node("classify_intent", classify_intent)
@@ -36,8 +34,12 @@ def build_graph() -> StateGraph:
 
     graph.add_conditional_edges(
         "classify_intent",
-        lambda s: "destructive" if s.get("pending_destructive_op") else "analysis",
-        {"destructive": "confirmation_gate", "analysis": "execute_analysis"},
+        _route_intent,
+        {
+            "destructive":  "confirmation_gate",
+            "analysis":     "execute_analysis",
+            "out_of_scope": "mask_and_format",
+        },
     )
 
     graph.add_edge("execute_analysis", "mask_and_format")

@@ -1,8 +1,4 @@
-"""Golden Bucket storage — Trio retrieval and incremental updates.
-
-Small-scale: FAISS index + SQLite. Rebuilds the FAISS index from the
-database on each add_trios call. Suitable for prototype scale (<10k trios).
-"""
+"""Golden Bucket storage — Trio retrieval and persistence via FAISS + SQLite."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,8 +24,6 @@ class Trio:
 class GoldenBucket:
     """Vector-searchable Golden Bucket over Trio records."""
 
-    DEFAULT_DIM = 768  # Gemini embedding-001 dimension
-
     def __init__(self, path: str, embedder: Embeddings | None) -> None:
         self._db_path = Path(path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,8 +32,7 @@ class GoldenBucket:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        cur = self._conn.cursor()
-        cur.execute("""
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS trios (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               question TEXT NOT NULL,
@@ -75,9 +68,8 @@ class GoldenBucket:
         questions = [q for _, q, _, _ in rows]
         vectors = self._embedder.embed_documents(questions)
         query_vec = self._embedder.embed_query(query)
-        dim = len(query_vec)
 
-        index = faiss.IndexFlatL2(dim)
+        index = faiss.IndexFlatL2(len(query_vec))
         index.add(np.array(vectors, dtype="float32"))
         _, indices = index.search(np.array([query_vec], dtype="float32"), min(k, len(rows)))
 

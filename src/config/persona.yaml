@@ -1,6 +1,7 @@
-tone: professional
+tone: "professional and concise"
 style_hints:
-  - always_compare_branches_by_revenue_and_margin
-  - use_markdown_tables_for_top_5_or_10_lists
-  - bullet_points_for_qualitative_analysis
-  - lead_with_key_metric_then_supporting_data
+  - "Lead with the key metric, then supporting data"
+  - "Use markdown tables for top-5 or top-10 lists"
+  - "Use bullet points for qualitative analysis"
+  - "Always compare branches or products by revenue and margin"
+  - "End with a one-sentence executive summary"

@@ -1,27 +1,37 @@
 """Generic tenacity-based retry decorator for external service calls."""
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import logging
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception,
+    before_sleep_log,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def with_backoff(max_attempts: int = 3, min_wait: int = 1, max_wait: int = 10):
+def _is_retryable(exc: BaseException) -> bool:
+    """Return True for transient errors worth retrying."""
+    retryable_messages = (
+        "429", "quota", "rate limit", "resource exhausted",
+        "503", "service unavailable", "timeout", "connection",
+    )
+    msg = str(exc).lower()
+    return any(keyword in msg for keyword in retryable_messages)
+
+
+def with_backoff(max_attempts: int = 5, min_wait: float = 2.0, max_wait: float = 60.0):
     """Return a tenacity retry decorator with exponential back-off.
 
-    Use this on any function that calls an external API (LLM, BigQuery)
-    to make it resilient to transient failures and rate-limit errors.
-
-    Args:
-        max_attempts: Maximum number of total attempts.
-        min_wait: Minimum seconds between retries.
-        max_wait: Maximum seconds between retries.
+    Retries only on transient/rate-limit errors. Fails fast on permanent
+    errors (e.g. bad SQL, auth failures).
     """
     return retry(
         stop=stop_after_attempt(max_attempts),
-        wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
-        retry=retry_if_exception_type(Exception),
-        before_sleep=lambda retry_state: logger.warning(
-            f"Retry attempt {retry_state.attempt_number}"
-        ),
+        wait=wait_exponential(multiplier=2, min=min_wait, max=max_wait),
+        retry=retry_if_exception(_is_retryable),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
     )

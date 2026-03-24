@@ -52,3 +52,22 @@ pytest tests/integration
 ## Configuration
 - **LLM/persona**: edit `config.yaml` and `src/config/persona.yaml` — no redeploy needed
 - **Environment**: see `.env.example`
+
+## Monitoring Logs
+
+All agent activity is written as structured JSON to `data/agent.log`.
+The CLI output is kept clean — only WARNING-level messages appear on screen.
+
+To monitor the log file live in a separate terminal:
+
+```bash
+tail -f data/agent.log
+```
+or prettier using 
+```bash
+tail -f data/agent.log | python -m json.tool
+```
+Log files rotate automatically at 5 MB (3 backups kept):
+    data/agent.log ← current
+    data/agent.log.1 ← previous
+    data/agent.log.2 ← older
