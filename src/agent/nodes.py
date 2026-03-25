@@ -52,7 +52,9 @@ _prefs = UserPrefsStore(
 _DATASET = "bigquery-public-data.thelook_ecommerce"
 
 # ── Prompt 1: SQL generation only — no persona, no prose ────────────────────
-_SQL_SYSTEM_PROMPT = """You are a BigQuery SQL expert. Your ONLY job is to output a single valid BigQuery SQL query.
+_SQL_SYSTEM_PROMPT = """
+You are a BigQuery SQL expert.
+Your ONLY job is to output a single valid BigQuery SQL query.
 
 Dataset: `bigquery-public-data.thelook_ecommerce`
 
@@ -377,7 +379,9 @@ def execute_analysis(state: AgentState) -> AgentState:
     # Step 3: guard — if it still doesn't look like SQL, return a clear error
     if not _looks_like_sql(sql):
         logger.error("LLM returned prose instead of SQL", extra={"response_preview": sql[:200]})
-        state["raw_result"] = {"error": "Could not generate a valid SQL query. Please rephrase your question."}
+        state["raw_result"] = {
+            "error": "Could not generate a valid SQL query. Please rephrase your question."
+        }
         state["last_sql"] = None
         metrics.increment("analysis_error")
         return state

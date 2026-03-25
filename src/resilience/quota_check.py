@@ -41,7 +41,10 @@ def check_quota_or_exit() -> None:
 
         if kind == "daily_quota":
             msg = _daily_quota_message(str(exc))
-            logger.warning("Startup quota check failed — daily quota exhausted", extra={"error": str(exc)[:300]})
+            logger.warning(
+                "Startup quota check failed — daily quota exhausted",
+                extra={"error": str(exc)[:300]},
+            )
             print()
             print("=" * 60)
             for line in msg.splitlines():
@@ -51,7 +54,10 @@ def check_quota_or_exit() -> None:
             sys.exit(1)
 
         elif kind == "rate_limit":
-            logger.warning("Startup quota check: rate-limited but quota available", extra={"error": str(exc)[:200]})
+            logger.warning(
+                "Startup quota check: rate-limited but quota available",
+                extra={"error": str(exc)[:200]},
+            )
             print("  ⚠️   API is rate-limited right now but quota is available.")
             print("      Queries may be slow until the rate limit clears.")
 
