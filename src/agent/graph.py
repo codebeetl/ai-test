@@ -12,7 +12,13 @@ from src.agent.nodes import (
 
 
 def _route_intent(state: AgentState) -> str:
-    """Route after intent classification."""
+    """Route after intent classification.
+
+    Short-circuits to mask_and_format if classify_intent already set an error
+    (e.g. daily quota exhausted during classification).
+    """
+    if (state.get("raw_result") or {}).get("error"):
+        return "error"
     if state.get("pending_destructive_op"):
         return "destructive"
     if (state.get("raw_result") or {}).get("out_of_scope"):
@@ -43,13 +49,13 @@ def build_graph() -> StateGraph:
         "classify_intent",
         _route_intent,
         {
+            "error":        "mask_and_format",   # quota/error — skip LLM nodes
             "destructive":  "confirmation_gate",
             "analysis":     "execute_analysis",
             "out_of_scope": "mask_and_format",
         },
     )
 
-    # FIX (Req 3): confirmation is now enforced at graph level, not buried in the tool.
     graph.add_conditional_edges(
         "confirmation_gate",
         _route_confirmation,

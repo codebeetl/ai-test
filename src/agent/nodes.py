@@ -18,11 +18,18 @@ from src.memory.user_prefs import UserPrefsStore
 from src.resilience.retry import with_backoff
 from src.oversight.confirmation_flow import require_confirmation
 from src.observability import metrics
+from src.observability.progress import show as _progress, clear as _progress_clear
 from src.resilience.quota_guard import quota_safe_invoke
 
 logger = logging.getLogger(__name__)
 
 _settings = load_settings()
+
+# ── Session-level quota state ─────────────────────────────────────────────────
+# Once daily quota is confirmed exhausted, _QUOTA_EXHAUSTED is set to the
+# user-facing message so every subsequent _checked_invoke short-circuits
+# immediately without retrying the LLM.
+_QUOTA_EXHAUSTED: str | None = None
 _llm = ChatGoogleGenerativeAI(
     model=_settings.llm.model,
     temperature=_settings.llm.temperature,
@@ -155,18 +162,28 @@ def _invoke_llm(prompt_messages):
 def _checked_invoke(prompt_messages) -> tuple[Any | None, dict | None]:
     """Call _invoke_llm via quota_safe_invoke.
 
+    Short-circuits immediately if the daily quota was already exhausted this
+    session, avoiding pointless retries that burn time and produce noisy logs.
+
     Returns:
         (response, None)          on success.
         (None, quota_error_dict)  when quota/rate limit is hit.
     """
+    global _QUOTA_EXHAUSTED
+    if _QUOTA_EXHAUSTED:
+        return None, {"quota_error": True, "kind": "daily_quota", "message": _QUOTA_EXHAUSTED}
+
     result = quota_safe_invoke(_invoke_llm, prompt_messages)
     if isinstance(result, dict) and result.get("quota_error"):
+        if result.get("kind") == "daily_quota":
+            _QUOTA_EXHAUSTED = result["message"]   # latch — no more LLM calls this session
         return None, result
     return result, None
 
 
 def classify_intent(state: AgentState) -> AgentState:
     """Classify user input as ANALYSIS, DESTRUCTIVE, or OUT_OF_SCOPE (Req 2)."""
+    _progress("classify")
     last_message = _extract_text(state["messages"][-1].content)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -216,6 +233,7 @@ def execute_analysis(state: AgentState) -> AgentState:
     query_text = _extract_text(state["messages"][-1].content)
 
     # Step 1: retrieve similar expert trios for context
+    _progress("analysis")
     similar_trios = search_golden_bucket.invoke({"query": query_text, "k": 3})
 
     # Step 2: generate SQL with a clean, prose-free prompt
@@ -244,6 +262,7 @@ def execute_analysis(state: AgentState) -> AgentState:
         return state
 
     # Step 4: execute with self-correction
+    _progress("executing")
     result = run_bigquery_query.invoke({"sql": sql})
     state["last_sql"] = sql
 
@@ -253,6 +272,7 @@ def execute_analysis(state: AgentState) -> AgentState:
         return state
 
     # Step 5: format a report using a separate persona-aware prompt (Req 8)
+    _progress("reporting")
     # FIX (Req 8): persona loaded fresh so config.yaml changes apply without restart
     persona = load_settings().persona.to_prompt_fragment()
     rows = result.get("rows", [])
@@ -308,8 +328,10 @@ def confirmation_gate(state: AgentState) -> AgentState:
     Clears pending_destructive_op if the operator does not confirm, causing
     _route_confirmation in graph.py to route to mask_and_format instead.
     """
+    _progress("destructive")
     op = state.get("pending_destructive_op") or {}
     raw_message = op.get("raw_message", "destructive operation")
+    _progress_clear()  # clear before the confirmation prompt appears
     confirmed = require_confirmation(raw_message)
     if not confirmed:
         state["pending_destructive_op"] = None
@@ -343,6 +365,7 @@ def execute_destructive(state: AgentState) -> AgentState:
 
 def mask_and_format(state: AgentState) -> AgentState:
     """Apply PII masking and user-specific formatting to the raw result (Req 2, 4.1)."""
+    _progress("formatting")
     user_id = state.get("user_id", "anonymous")
     prefs = _prefs.get(user_id)
     raw = state.get("raw_result") or {}
@@ -404,4 +427,5 @@ def mask_and_format(state: AgentState) -> AgentState:
             metrics.increment("pii_text_masked")
         state["final_output"] = masked
 
+    _progress_clear()
     return state

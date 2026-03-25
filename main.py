@@ -12,6 +12,8 @@ from src.agent.state import AgentState
 from src.memory.user_prefs import UserPrefsStore
 from src.config.settings import load_settings
 from src.observability.metrics import write_snapshot
+from src.observability.progress import clear as progress_clear
+from src.resilience.quota_check import check_quota_or_exit
 
 
 def _get_startup_hints() -> list[str]:
@@ -78,6 +80,7 @@ def print_banner(hints: list[str]) -> None:
 
 def run_cli() -> None:
     """Run an interactive terminal session with the agent."""
+    check_quota_or_exit()
     hints = _get_startup_hints()
     settings = load_settings()
     graph = build_graph()
@@ -129,6 +132,7 @@ def run_cli() -> None:
             state["messages"].append(HumanMessage(content=user_input))
             state = graph.invoke(state)
 
+            progress_clear()
             print("\nAssistant:")
             print(state.get("final_output") or "[No output]")
 

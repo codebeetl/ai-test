@@ -76,6 +76,17 @@ def setup_logging(level: int = logging.INFO) -> None:
 
     logging.basicConfig(level=level, handlers=[file_handler, stdout_handler])
 
-    # Suppress noisy third-party loggers from polluting the log file
-    for noisy in ("httpx", "httpcore", "google.auth", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Suppress noisy third-party loggers from the console (still written to file)
+    for noisy in (
+        "httpx", "httpcore", "google.auth", "urllib3",
+        "tenacity",                    # suppresses raw retry WARNING lines
+        "langchain_google_genai",      # suppresses ChatGoogleGenerativeAIError dumps
+        "langchain_core",
+        "google.api_core",
+        "google.generativeai",
+    ):
+        noisy_logger = logging.getLogger(noisy)
+        noisy_logger.setLevel(logging.WARNING)
+        # Remove any existing stdout handlers these libraries may have added
+        noisy_logger.propagate = False
+        noisy_logger.addHandler(file_handler)  # keep writing to file
