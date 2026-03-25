@@ -252,18 +252,34 @@ def _checked_invoke(prompt_messages, *, fn=None) -> tuple[Any | None, dict | Non
 
 
 def classify_intent(state: AgentState) -> AgentState:
-    """Classify user input as ANALYSIS, DESTRUCTIVE, or OUT_OF_SCOPE (Req 2)."""
+    """Classify user input as ANALYSIS, DESTRUCTIVE, or OUT_OF_SCOPE (Req 2).
+
+    DESTRUCTIVE only matches requests to delete saved reports for a named client.
+    General database operations (e.g. "delete the user table") are OUT_OF_SCOPE.
+    Client name extraction happens here so invalid requests are rejected before
+    the confirmation gate, not after.
+    """
     _progress("classify")
     last_message = _extract_text(state["messages"][-1].content)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system",
-         "You are a classification model for a retail data analysis assistant.\n"
+         "You are a classification model for a retail data agent.\n"
+         "This agent can only: answer data analysis questions and delete SAVED REPORTS.\n"
+         "Saved reports are named report files stored by the agent — not database tables.\n"
+         "\n"
          "Classify the user message as exactly one of:\n"
          "  ANALYSIS     - a question about sales, orders, products, customers, or performance\n"
-         "  DESTRUCTIVE  - a request to delete or remove reports\n"
-         "  OUT_OF_SCOPE - anything else (greetings, small talk, unrelated questions)\n"
-         "Reply with one word only."),
+         "  DESTRUCTIVE  - a request to delete SAVED REPORTS for a specific named client\n"
+         "               (must mention a client/company name AND deleting reports)\n"
+         "  OUT_OF_SCOPE - anything else: database operations, table deletes, DDL,\n"
+         "               greetings, small talk, unrelated questions\n"
+         "\n"
+         "If DESTRUCTIVE, reply in this exact format (two lines):\n"
+         "DESTRUCTIVE\n"
+         "CLIENT: <client name>\n"
+         "\n"
+         "Otherwise reply with one word only: ANALYSIS or OUT_OF_SCOPE."),
         ("user", "{query}"),
     ])
     msg = prompt.format_messages(query=last_message)
@@ -271,8 +287,45 @@ def classify_intent(state: AgentState) -> AgentState:
     if quota_err:
         state["raw_result"] = {"error": quota_err["message"]}
         return state
-    label = _extract_text(resp.content).upper().strip()
-    logger.info("Intent classified", extra={"label": label, "query_preview": last_message[:80]})
+
+    raw_label = _extract_text(resp.content).strip()
+    first_line = raw_label.splitlines()[0].upper().strip()
+
+    if "DESTRUCTIVE" in first_line:
+        # Extract client name from second line "CLIENT: <name>"
+        client_name = None
+        for line in raw_label.splitlines()[1:]:
+            if line.upper().startswith("CLIENT:"):
+                client_name = line.split(":", 1)[1].strip()
+                break
+
+        if not client_name or len(client_name) < 2:
+            # No valid client name — treat as out of scope to avoid a meaningless confirmation
+            state["raw_result"] = {
+                "out_of_scope": True,
+                "message": (
+                    "Deletion requests must specify a client name whose saved reports "
+                    "should be removed.\nExample: \"Delete saved reports for Acme Corp\""
+                ),
+            }
+            logger.info("DESTRUCTIVE classified but no client name extracted", extra={
+                "query_preview": last_message[:80]
+            })
+            return state
+
+        label = "DESTRUCTIVE"
+        state["pending_destructive_op"] = {
+            "raw_message": last_message,
+            "client_name": client_name,
+        }
+        logger.info(
+            "Intent classified",
+            extra={"label": label, "client": client_name, "query_preview": last_message[:80]},
+        )
+    else:
+        label = first_line if first_line in ("ANALYSIS", "OUT_OF_SCOPE") else "OUT_OF_SCOPE"
+        logger.info("Intent classified", extra={"label": label, "query_preview": last_message[:80]})
+
     metrics.increment(f"intent_{label.lower()[:20]}")
 
     if "DESTRUCTIVE" in label and "delete" in last_message.lower():
@@ -470,23 +523,23 @@ def confirmation_gate(state: AgentState) -> AgentState:
 
 
 def execute_destructive(state: AgentState) -> AgentState:
-    """Execute a pending destructive operation (already confirmed by confirmation_gate)."""
+    """Execute a pending destructive operation (already confirmed by confirmation_gate).
+
+    client_name is extracted during classify_intent and stored in pending_destructive_op,
+    so no additional LLM call is needed here.
+    """
     op = state.get("pending_destructive_op") or {}
-    raw_message = op.get("raw_message", "")
+    client_name = op.get("client_name", "").strip()
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Extract only the client name from this delete request. Return just the name."),
-        ("user", "{message}"),
-    ])
-    msg = prompt.format_messages(message=raw_message)
-    client_resp, quota_err = _checked_invoke(msg)
-    if quota_err:
-        state["raw_result"] = {"message": quota_err["message"]}
+    if not client_name:
+        # Defensive: should never reach here without a client name
+        state["raw_result"] = {"message": "No client name found. Deletion aborted."}
         return state
-    client_name = _extract_text(client_resp.content)
 
+    logger.info("Executing destructive op", extra={"client": client_name})
     result = delete_reports_by_client.invoke({"client_name": client_name})
     state["raw_result"] = {"message": result}
+    metrics.increment("destructive_executed")
     return state
 
 
@@ -498,13 +551,14 @@ def mask_and_format(state: AgentState) -> AgentState:
     raw = state.get("raw_result") or {}
 
     if raw.get("out_of_scope"):
-        state["final_output"] = (
+        custom_msg = raw.get("message")
+        state["final_output"] = custom_msg if custom_msg else (
             "I can only help with retail data analysis questions, such as:\n"
             "  - Sales and revenue trends\n"
             "  - Product performance\n"
             "  - Customer behaviour and order history\n"
             "  - Inventory and returns\n"
-            "  - Managing saved reports\n\n"
+            "  - Managing saved reports (delete saved reports for <client name>)\n\n"
             "Please ask a question about the data."
         )
         return state
