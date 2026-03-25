@@ -79,11 +79,11 @@ def with_sql_self_correction(execute_fn: Callable, sql: str) -> dict:
             df = execute_fn(current_sql)
             result = {"rows": df.to_dict(orient="records"), "columns": list(df.columns)}
             if attempt > 0:
-                result["warning"] = f"Query succeeded after {attempt} self-correction(s)"
+                result["debug"] = f"Query succeeded after {attempt} self-correction(s)"
             return result
         except Exception as e:
             attempt += 1
-            logger.warning(
+            logger.debug(
                 "SQL attempt failed",
                 extra={"attempt": attempt, "error": str(e)[:200]},
             )

@@ -44,19 +44,39 @@ _SQL_SYSTEM_PROMPT = """You are a BigQuery SQL expert. Your ONLY job is to outpu
 
 Dataset: `bigquery-public-data.thelook_ecommerce`
 
-Available tables (use EXACTLY these fully-qualified names, always in backticks):
-  `bigquery-public-data.thelook_ecommerce.orders`
-  `bigquery-public-data.thelook_ecommerce.order_items`
-  `bigquery-public-data.thelook_ecommerce.products`
-  `bigquery-public-data.thelook_ecommerce.users`
+Available tables and their EXACT column names:
+
+`bigquery-public-data.thelook_ecommerce.orders`
+  order_id, user_id, status, gender, created_at, returned_at,
+  shipped_at, delivered_at, num_of_item
+
+`bigquery-public-data.thelook_ecommerce.order_items`
+  id, order_id, user_id, product_id, inventory_item_id, status,
+  created_at, shipped_at, delivered_at, returned_at, sale_price
+
+`bigquery-public-data.thelook_ecommerce.products`
+  id, cost, category, name, brand, retail_price, department,
+  sku, distribution_center_id
+
+`bigquery-public-data.thelook_ecommerce.users`
+  id, first_name, last_name, age, gender, state, street_address,
+  postal_code, city, country, latitude, longitude,
+  traffic_source, created_at
 
 Rules:
   - Output ONLY the raw SQL query. No explanation. No markdown. No code fences.
   - Do NOT write any words before or after the SQL.
   - The very first character of your response must be S (for SELECT) or W (for WITH).
-  - Never use unqualified table names.
-  - Never SELECT email, phone, phone_number, mobile, or address columns.
+  - Always use fully-qualified table names in backticks.
+  - Never SELECT email, phone, phone_number, mobile, address, first_name, last_name columns.
   - Use LIMIT clauses to avoid returning more than 1000 rows.
+  - For date filtering use: DATE(created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL N DAY)
+  - Revenue = SUM(oi.sale_price) joining order_items (oi) to orders (o) on order_id.
+  - For country/region queries, use u.country joining users (u) to orders (o) on user_id.
+  - Always close every opening parenthesis. COUNT every subquery alias.
+
+Conversation context (use to resolve follow-up questions):
+{context}
 
 Reference examples from expert analysts:
 {examples}"""
@@ -241,9 +261,18 @@ def execute_analysis(state: AgentState) -> AgentState:
         ("system", _SQL_SYSTEM_PROMPT),
         ("user", "{query}"),
     ])
+    # Build conversation context from last 4 messages (excluding current)
+    history = state.get("messages", [])[:-1][-4:]
+    context_lines = []
+    for m in history:
+        role = "User" if m.__class__.__name__ == "HumanMessage" else "Assistant"
+        context_lines.append(f"{role}: {_extract_text(m.content)[:200]}")
+    context_str = "\n".join(context_lines) if context_lines else "No prior context."
+
     sql_msg = sql_prompt.format_messages(
         query=query_text,
         examples=json.dumps(_serialise_trios(similar_trios), indent=2),
+        context=context_str,
     )
     sql_resp, quota_err = _checked_invoke(sql_msg)
     if quota_err:

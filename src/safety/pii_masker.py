@@ -15,7 +15,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
-_PHONE_RE = re.compile(r"(\+?\d[\d\s\-().]{7,}\d)")
+# Require at least one formatting character (space, dash, dot, parens) to avoid
+# false positives on revenue figures, product IDs, and other numeric data.
+_PHONE_RE = re.compile(
+    r"(\+?\d[\d]{1,3}[\s\-.()]+[\d\s\-.()]{5,}\d)"
+)
 
 
 def _get_pii_columns() -> set[str]:
@@ -37,7 +41,7 @@ def mask_pii(text: str) -> str:
     masked = _EMAIL_RE.sub("[EMAIL REDACTED]", text)
     masked = _PHONE_RE.sub("[PHONE REDACTED]", masked)
     if masked != text:
-        logger.warning("PII detected and masked in output string")
+        logger.debug("PII detected and masked in output string")
     return masked
 
 

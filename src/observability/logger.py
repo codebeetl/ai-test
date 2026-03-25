@@ -69,10 +69,11 @@ def setup_logging(level: int = logging.INFO) -> None:
     file_handler.setFormatter(JsonFormatter())
     file_handler.setLevel(level)
 
-    # Minimal stdout handler — WARNING and above only, plain text
+    # Stdout handler — CRITICAL only (internal warnings go to file, not console).
+    # User-facing error messages are surfaced via state["final_output"], not logs.
     stdout_handler = logging.StreamHandler()
-    stdout_handler.setFormatter(logging.Formatter("⚠️  %(levelname)s: %(message)s"))
-    stdout_handler.setLevel(logging.WARNING)
+    stdout_handler.setFormatter(logging.Formatter("%(message)s"))
+    stdout_handler.setLevel(logging.CRITICAL)
 
     logging.basicConfig(level=level, handlers=[file_handler, stdout_handler])
 

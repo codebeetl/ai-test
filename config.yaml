@@ -41,4 +41,4 @@ resilience:
   bq_min_wait_s: 2
   bq_max_wait_s: 15
   # Max SQL self-correction rewrites per query
-  sql_max_retries: 2
+  sql_max_retries: 3

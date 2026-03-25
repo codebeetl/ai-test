@@ -70,12 +70,12 @@ def with_sql_self_correction(execute_fn: Callable, sql: str) -> dict:
             return result
         except Exception as e:
             attempt += 1
-            logger.warning(
+            logger.debug(
                 "SQL attempt failed",
                 extra={"attempt": attempt, "error": str(e)[:200]},
             )
             if attempt > max_retries:
-                logger.error("Max SQL retries exceeded, returning error dict")
+                logger.debug("Max SQL retries exceeded, returning error dict")
                 return {"error": str(e), "rows": [], "columns": []}
             try:
                 rewritten = _rewrite_sql_with_llm(current_sql, str(e))
@@ -112,11 +112,20 @@ def _rewrite_sql_with_llm(sql: str, error_msg: str) -> str:
         ("system",
          "Fix the following BigQuery SQL based on the error message.\n"
          f"Always use fully-qualified table names: `{_DATASET}.table_name`\n"
-         "Common fixes:\n"
-         "  - Use DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR) for date ranges\n"
+         "\nExact column names available:\n"
+         "  orders:      order_id, user_id, status, gender, created_at, num_of_item\n"
+         "  order_items: id, order_id, user_id, product_id, status, created_at, sale_price\n"
+         "  products:    id, cost, category, name, brand, retail_price, department, sku\n"
+         "  users:       id, age, gender, state, city, country, traffic_source, created_at\n"
+         "\nCommon fixes:\n"
+         "  - Ensure every opening parenthesis has a matching closing parenthesis\n"
+         "  - Use DATE(created_at) >= DATE_SUB(CURRENT_DATE(), INTERVAL N DAY) for dates\n"
          "  - Cast TIMESTAMP to DATE with DATE() before using DATE_SUB\n"
-         "  - Use TIMESTAMP_SUB only with HOUR, MINUTE, SECOND, MICROSECOND\n"
-         "  - Never select PII columns (email, phone, phone_number, mobile, address)\n"
+         "  - Revenue = SUM(oi.sale_price) joining order_items to orders on order_id\n"
+         "  - For country queries join users on user_id, use u.country\n"
+         "  - Never select PII columns (email, phone, phone_number, mobile, address,\n"
+         "    first_name, last_name)\n"
+         "  - Every subquery must have an alias\n"
          "Return ONLY the corrected SQL. No explanation, no markdown."),
         ("user", "SQL:\n{sql}\n\nError:\n{error}"),
     ])
