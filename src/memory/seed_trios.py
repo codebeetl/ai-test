@@ -82,7 +82,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     settings = load_settings()
-    embedder = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    embedder = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     db_path = settings.memory.resolve_path(settings.memory.golden_bucket_path)
     gb = GoldenBucket(str(db_path), embedder)
     seed_golden_bucket_if_empty(gb)

@@ -1,9 +1,4 @@
-"""Application configuration layer — config.yaml is the single source of truth.
-
-All key variables (model names, embedding model, confirmation phrase, PII columns,
-retry parameters, default user) are defined in config.yaml and surfaced here as
-typed Pydantic models.  Nothing in the codebase should hardcode these values.
-"""
+"""Application configuration layer — config.yaml is the single source of truth."""
 
 from pathlib import Path
 from typing import Any
@@ -16,8 +11,10 @@ class LLMSettings(BaseModel):
     model: str = "gemini-2.5-flash"
     temperature: float = 0.2
     max_tokens: int = 8192
-    correction_model: str = "gemini-2.5-flash"
-    embedding_model: str = "models/embedding-001"
+    classification_model: str = "gemini-2.5-flash-lite"
+    correction_model: str = "gemini-2.5-flash-lite"
+    embedding_model: str = "models/text-embedding-004"
+    report_max_output_tokens: int = 1024
 
 
 class BigQuerySettings(BaseModel):
@@ -32,7 +29,6 @@ class MemoryPaths(BaseModel):
     candidate_trios_path: str = "data/candidate_trios.jsonl"
 
     def resolve_path(self, relative: str) -> Path:
-        """Resolve a data path relative to the project root."""
         project_root = Path(__file__).parent.parent.parent
         return project_root / relative
 
@@ -45,6 +41,14 @@ class SafetySettings(BaseModel):
     )
 
 
+class AgentSettings(BaseModel):
+    report_max_rows: int = 20
+    context_verbatim_turns: int = 2
+    context_summary_enabled: bool = True
+    golden_bucket_cache_ttl_s: int = 300
+    golden_bucket_cache_size: int = 50
+
+
 class ResilienceSettings(BaseModel):
     llm_max_attempts: int = 5
     llm_min_wait_s: float = 5.0
@@ -52,11 +56,11 @@ class ResilienceSettings(BaseModel):
     bq_max_attempts: int = 3
     bq_min_wait_s: float = 2.0
     bq_max_wait_s: float = 15.0
-    sql_max_retries: int = 2
+    sql_max_retries: int = 3
 
 
 class PersonaSettings(BaseModel):
-    """Loaded from persona.yaml — editable by non-developers without redeployment (Req 8)."""
+    """Loaded from persona.yaml — editable without redeployment (Req 8)."""
     tone: str = "professional and concise"
     style_hints: list[str] = Field(default_factory=list)
 
@@ -70,6 +74,7 @@ class AppSettings(BaseModel):
     bigquery: BigQuerySettings
     memory: MemoryPaths
     safety: SafetySettings
+    agent: AgentSettings
     resilience: ResilienceSettings
     persona: PersonaSettings
 
@@ -78,12 +83,7 @@ def load_settings(
     config_path: str = "config.yaml",
     persona_path: str = "src/config/persona.yaml",
 ) -> AppSettings:
-    """Load application settings from config.yaml (and persona.yaml for tone).
-
-    Both files are read at call time so changes apply without restarting
-    the process (satisfies Req 8 for persona; also allows live tuning of
-    model, retry parameters, confirm phrase, etc. via config.yaml).
-    """
+    """Load application settings from config.yaml and persona.yaml."""
     data: dict[str, Any] = {}
     if Path(config_path).exists():
         data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
@@ -97,6 +97,7 @@ def load_settings(
         bigquery=BigQuerySettings(**data.get("bigquery", {})),
         memory=MemoryPaths(**data.get("memory", {})),
         safety=SafetySettings(**data.get("safety", {})),
+        agent=AgentSettings(**data.get("agent", {})),
         resilience=ResilienceSettings(**data.get("resilience", {})),
         persona=PersonaSettings(**persona_data),
     )

@@ -30,9 +30,21 @@ _settings = load_settings()
 # user-facing message so every subsequent _checked_invoke short-circuits
 # immediately without retrying the LLM.
 _QUOTA_EXHAUSTED: str | None = None
+# Main LLM — SQL generation
 _llm = ChatGoogleGenerativeAI(
     model=_settings.llm.model,
     temperature=_settings.llm.temperature,
+)
+# Lightweight LLM — classification and context summarisation (cheaper/faster)
+_classification_llm = ChatGoogleGenerativeAI(
+    model=_settings.llm.classification_model,
+    temperature=0,
+)  # gemini-2.5-flash-lite (config: llm.classification_model)
+# Report LLM — token-capped to control verbosity and output cost
+_report_llm = ChatGoogleGenerativeAI(
+    model=_settings.llm.model,
+    temperature=_settings.llm.temperature,
+    max_output_tokens=_settings.llm.report_max_output_tokens,
 )
 _prefs = UserPrefsStore(
     str(_settings.memory.resolve_path(_settings.memory.user_prefs_path))
@@ -179,11 +191,46 @@ def _invoke_llm(prompt_messages):
     return _call(prompt_messages)
 
 
-def _checked_invoke(prompt_messages) -> tuple[Any | None, dict | None]:
-    """Call _invoke_llm via quota_safe_invoke.
+def _invoke_classification_llm(prompt_messages):
+    """Lightweight LLM for classification and summarisation (config: classification_model)."""
+    settings = load_settings()
+    r = settings.resilience
 
-    Short-circuits immediately if the daily quota was already exhausted this
-    session, avoiding pointless retries that burn time and produce noisy logs.
+    @with_backoff(
+        max_attempts=r.llm_max_attempts,
+        min_wait=r.llm_min_wait_s,
+        max_wait=r.llm_max_wait_s,
+    )
+    def _call(msgs):
+        return _classification_llm.invoke(msgs)
+
+    return _call(prompt_messages)
+
+
+def _invoke_report_llm(prompt_messages):
+    """Token-capped report LLM (config: report_max_output_tokens)."""
+    settings = load_settings()
+    r = settings.resilience
+
+    @with_backoff(
+        max_attempts=r.llm_max_attempts,
+        min_wait=r.llm_min_wait_s,
+        max_wait=r.llm_max_wait_s,
+    )
+    def _call(msgs):
+        return _report_llm.invoke(msgs)
+
+    return _call(prompt_messages)
+
+
+def _checked_invoke(prompt_messages, *, fn=None) -> tuple[Any | None, dict | None]:
+    """Call an LLM invoke function via quota_safe_invoke.
+
+    Short-circuits immediately if daily quota was already exhausted this session.
+
+    Args:
+        prompt_messages: Formatted prompt messages.
+        fn: LLM invoke function to call (default: _invoke_llm).
 
     Returns:
         (response, None)          on success.
@@ -193,10 +240,11 @@ def _checked_invoke(prompt_messages) -> tuple[Any | None, dict | None]:
     if _QUOTA_EXHAUSTED:
         return None, {"quota_error": True, "kind": "daily_quota", "message": _QUOTA_EXHAUSTED}
 
-    result = quota_safe_invoke(_invoke_llm, prompt_messages)
+    invoke_fn = fn or _invoke_llm
+    result = quota_safe_invoke(invoke_fn, prompt_messages)
     if isinstance(result, dict) and result.get("quota_error"):
         if result.get("kind") == "daily_quota":
-            _QUOTA_EXHAUSTED = result["message"]   # latch — no more LLM calls this session
+            _QUOTA_EXHAUSTED = result["message"]
         return None, result
     return result, None
 
@@ -217,7 +265,7 @@ def classify_intent(state: AgentState) -> AgentState:
         ("user", "{query}"),
     ])
     msg = prompt.format_messages(query=last_message)
-    resp, quota_err = _checked_invoke(msg)
+    resp, quota_err = _checked_invoke(msg, fn=_invoke_classification_llm)
     if quota_err:
         state["raw_result"] = {"error": quota_err["message"]}
         return state
@@ -236,6 +284,55 @@ def classify_intent(state: AgentState) -> AgentState:
         state["raw_result"] = None
 
     return state
+
+
+def _build_context(state: AgentState) -> str:
+    """Build conversation context for the SQL prompt.
+
+    Keeps the most recent context_verbatim_turns verbatim (config.yaml).
+    If context_summary_enabled=true, older turns are summarised into one
+    sentence via the classification LLM to save tokens.
+    """
+    settings = load_settings()
+    verbatim_n = settings.agent.context_verbatim_turns
+    summarise = settings.agent.context_summary_enabled
+
+    all_history = state.get("messages", [])[:-1]  # exclude current message
+    if not all_history:
+        return "No prior context."
+
+    recent = all_history[-verbatim_n * 2:]          # keep last N turn pairs
+    older  = all_history[:-verbatim_n * 2] if len(all_history) > verbatim_n * 2 else []
+
+    lines = []
+
+    if older and summarise:
+        older_text = " | ".join(
+            f"{'User' if m.__class__.__name__ == 'HumanMessage' else 'Assistant'}: "
+            f"{_extract_text(m.content)[:150]}"
+            for m in older
+        )
+        try:
+            summary_prompt = [
+                ("system", "Summarise the following conversation excerpt in one concise sentence "
+                           "focusing on what data was analysed and what was found."),
+                ("user", older_text),
+            ]
+            from langchain_core.prompts import ChatPromptTemplate
+            msgs = ChatPromptTemplate.from_messages(summary_prompt).format_messages(
+                **{}
+            )
+            resp, _ = _checked_invoke(msgs, fn=_invoke_classification_llm)
+            if resp:
+                lines.append(f"Earlier context (summarised): {_extract_text(resp.content)}")
+        except Exception as e:
+            logger.debug(f"Context summarisation failed, skipping: {e}")
+
+    for m in recent:
+        role = "User" if m.__class__.__name__ == "HumanMessage" else "Assistant"
+        lines.append(f"{role}: {_extract_text(m.content)[:300]}")
+
+    return "\n".join(lines) if lines else "No prior context."
 
 
 def execute_analysis(state: AgentState) -> AgentState:
@@ -261,13 +358,8 @@ def execute_analysis(state: AgentState) -> AgentState:
         ("system", _SQL_SYSTEM_PROMPT),
         ("user", "{query}"),
     ])
-    # Build conversation context from last 4 messages (excluding current)
-    history = state.get("messages", [])[:-1][-4:]
-    context_lines = []
-    for m in history:
-        role = "User" if m.__class__.__name__ == "HumanMessage" else "Assistant"
-        context_lines.append(f"{role}: {_extract_text(m.content)[:200]}")
-    context_str = "\n".join(context_lines) if context_lines else "No prior context."
+    # Build conversation context — verbatim recent turns + optional summary of older ones
+    context_str = _build_context(state)
 
     sql_msg = sql_prompt.format_messages(
         query=query_text,
@@ -311,7 +403,9 @@ def execute_analysis(state: AgentState) -> AgentState:
         import pandas as pd
         df = pd.DataFrame(rows, columns=columns)
         df = mask_dataframe_pii(df)
-        preview = df.head(50).to_markdown(index=False)
+        # Limit rows sent to report LLM — configurable via agent.report_max_rows
+        max_rows = load_settings().agent.report_max_rows
+        preview = df.head(max_rows).to_markdown(index=False)
 
         report_prompt = ChatPromptTemplate.from_messages([
             ("system", _REPORT_SYSTEM_PROMPT),
@@ -322,7 +416,7 @@ def execute_analysis(state: AgentState) -> AgentState:
             question=query_text,
             data=preview,
         )
-        report_resp, quota_err = _checked_invoke(report_msg)
+        report_resp, quota_err = _checked_invoke(report_msg, fn=_invoke_report_llm)
         if quota_err:
             # SQL succeeded — fall back to raw table output without a report
             logger.warning("Report generation skipped due to quota error")

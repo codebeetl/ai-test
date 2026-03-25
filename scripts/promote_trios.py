@@ -64,7 +64,7 @@ def main() -> None:
 
     print(f"Promoting {len(to_promote)} trio(s) into the Golden Bucket...")
 
-    embedder = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    embedder = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     gb = GoldenBucket(settings.memory.golden_bucket_path, embedder)
 
     trios = [

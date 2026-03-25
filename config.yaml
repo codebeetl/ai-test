@@ -3,10 +3,13 @@ llm:
   model: "gemini-2.5-flash"
   temperature: 0.2
   max_tokens: 8192
-  # Model used for SQL self-correction retries (can be a cheaper/faster model)
-  correction_model: "gemini-2.5-flash"
+  # Cheaper/faster model for classification and SQL correction
+  classification_model: "gemini-2.5-flash-lite"
+  correction_model: "gemini-2.5-flash-lite"
   # Embedding model for Golden Bucket similarity search
-  embedding_model: "models/embedding-001"
+  embedding_model: "models/text-embedding-004"
+  # Max output tokens for report generation (controls verbosity and token cost)
+  report_max_output_tokens: 1024
 
 bigquery:
   project_id: null
@@ -31,14 +34,22 @@ safety:
     - mobile
     - address
 
+agent:
+  # Max rows of BigQuery results passed to the report LLM (reduce to save tokens)
+  report_max_rows: 20
+  # Number of recent conversation turns kept verbatim in the SQL prompt
+  context_verbatim_turns: 2
+  # Older turns beyond context_verbatim_turns are summarised into one sentence
+  context_summary_enabled: true
+  # Golden Bucket cache: TTL in seconds (0 = disabled), max cached entries
+  golden_bucket_cache_ttl_s: 300
+  golden_bucket_cache_size: 50
+
 resilience:
-  # Max LLM invocation attempts (includes initial attempt)
   llm_max_attempts: 5
   llm_min_wait_s: 5
   llm_max_wait_s: 60
-  # Max BigQuery execution attempts before surfacing an error
   bq_max_attempts: 3
   bq_min_wait_s: 2
   bq_max_wait_s: 15
-  # Max SQL self-correction rewrites per query
   sql_max_retries: 3
